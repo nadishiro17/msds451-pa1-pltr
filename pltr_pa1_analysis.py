@@ -1,18 +1,3 @@
-"""
-MSDS 451 Financial Engineering — Programming Assignment 1
-Predicting next-day return direction for Palantir Technologies (PLTR)
-
-Replicates the WTI jump-start methodology with PLTR daily data:
-  1. Engineer 15 lag/EMA-based features
-  2. Standardize, then run all-possible-subsets logistic regression
-     and select features by Akaike Information Criterion (AIC)
-  3. Train an XGBoost classifier with TimeSeriesSplit cross-validation
-  4. Tune hyperparameters via RandomizedSearchCV
-  5. Report ROC AUC, confusion matrix, and classification report
-
-Author: Nadia Shiroglazova
-"""
-
 import os
 import warnings
 from itertools import chain, combinations
@@ -47,15 +32,6 @@ DATA_FILE = "msds_getdata_yfinance_pltr.csv"
 FIG_DIR = "figures"
 os.makedirs(FIG_DIR, exist_ok=True)
 
-
-# --------------------------------------------------------------------------- #
-# 1. Load data and engineer features
-# --------------------------------------------------------------------------- #
-print("=" * 72)
-print("PLTR Programming Assignment 1 — analysis pipeline")
-print("=" * 72)
-
-# Polars cannot parse the timezone-aware string, so cast to datetime first.
 pltr = pl.read_csv(DATA_FILE)
 pltr = pltr.with_columns(
     pl.col("Date").str.slice(0, 10).str.strptime(pl.Date, "%Y-%m-%d")
@@ -64,32 +40,26 @@ print("Original schema:", pltr.schema)
 print(f"Loaded {pltr.height} rows of PLTR daily data "
       f"({pltr['Date'].min()} to {pltr['Date'].max()})")
 
-# Drop columns we will not use.
 pltr = pltr.drop(["Dividends", "Stock Splits"])
 
-# Lagged closing prices (lags 1, 2, 3 days)
 pltr = pltr.with_columns(pl.col("Close").shift().alias("CloseLag1"))
 pltr = pltr.with_columns(pl.col("CloseLag1").shift().alias("CloseLag2"))
 pltr = pltr.with_columns(pl.col("CloseLag2").shift().alias("CloseLag3"))
 
-# High-minus-low (intraday range) and its lags
 pltr = pltr.with_columns((pl.col("High") - pl.col("Low")).alias("HML"))
 pltr = pltr.with_columns(pl.col("HML").shift().alias("HMLLag1"))
 pltr = pltr.with_columns(pl.col("HMLLag1").shift().alias("HMLLag2"))
 pltr = pltr.with_columns(pl.col("HMLLag2").shift().alias("HMLLag3"))
 
-# Open-minus-close (sign of intraday move) and its lags
 pltr = pltr.with_columns((pl.col("Open") - pl.col("Close")).alias("OMC"))
 pltr = pltr.with_columns(pl.col("OMC").shift().alias("OMCLag1"))
 pltr = pltr.with_columns(pl.col("OMCLag1").shift().alias("OMCLag2"))
 pltr = pltr.with_columns(pl.col("OMCLag2").shift().alias("OMCLag3"))
 
-# Lagged volume
 pltr = pltr.with_columns(pl.col("Volume").shift().alias("VolumeLag1"))
 pltr = pltr.with_columns(pl.col("VolumeLag1").shift().alias("VolumeLag2"))
 pltr = pltr.with_columns(pl.col("VolumeLag2").shift().alias("VolumeLag3"))
 
-# Exponential moving averages of CloseLag1 (no current-day leakage)
 pltr = pltr.with_columns(
     pl.col("CloseLag1").ewm_mean(half_life=1, ignore_nulls=True).alias("CloseEMA2")
 )
@@ -100,7 +70,6 @@ pltr = pltr.with_columns(
     pl.col("CloseLag1").ewm_mean(half_life=4, ignore_nulls=True).alias("CloseEMA8")
 )
 
-# Continuous response (log return) and binary target (1 = up, 0 = flat/down)
 pltr = pltr.with_columns(
     np.log(pl.col("Close") / pl.col("CloseLag1")).alias("LogReturn")
 )
@@ -108,7 +77,6 @@ pltr = pltr.with_columns(
     pl.when(pl.col("LogReturn") > 0.0).then(pl.lit(1)).otherwise(pl.lit(0)).alias("Target")
 )
 
-# Cast volumes to Float64 (so the StandardScaler downstream is happy) and round.
 pltr = pltr.with_columns(
     pl.col("Volume").cast(pl.Float64).round(0),
     pl.col("VolumeLag1").cast(pl.Float64).round(0),
@@ -116,7 +84,6 @@ pltr = pltr.with_columns(
     pl.col("VolumeLag3").cast(pl.Float64).round(0),
 )
 
-# Round price-derived columns for readability.
 price_cols = [
     "Open", "High", "Low", "Close",
     "CloseLag1", "CloseLag2", "CloseLag3",
@@ -130,10 +97,6 @@ pltr.write_csv("pltr-with-computed-features.csv")
 pltr = pltr.drop_nulls()
 print(f"Rows after dropping NaNs from lag/EMA warmup: {pltr.height}")
 
-
-# --------------------------------------------------------------------------- #
-# 2. Descriptive statistics and target balance
-# --------------------------------------------------------------------------- #
 stats_df = pltr.drop("Date").describe()
 stats_to_print = stats_df.transpose(include_header=True)
 print("\nDescriptive statistics (transposed):")
@@ -147,13 +110,9 @@ with pl.Config(
 ):
     print(stats_to_print)
 
-print("\nTarget balance:")
 print(pltr["Target"].value_counts())
 
 
-# --------------------------------------------------------------------------- #
-# 3. Build feature matrix X and target y
-# --------------------------------------------------------------------------- #
 X_df = pltr.drop([
     "Date", "LogReturn", "Target",
     "Open", "High", "Low", "Close", "Volume",
@@ -168,10 +127,6 @@ scaler = StandardScaler()
 X = scaler.fit_transform(np.array(X_df))
 y = np.array(pltr["Target"])
 
-
-# --------------------------------------------------------------------------- #
-# 4. All-possible-subsets feature selection with AIC
-# --------------------------------------------------------------------------- #
 def get_aic(Xa: np.ndarray, ya: np.ndarray) -> float:
     """AIC for a logistic regression on the given feature columns."""
     model = LogisticRegression(max_iter=1000)
@@ -204,9 +159,6 @@ top10 = results_df.sort("aic").head(10)
 print(top10)
 
 
-# --------------------------------------------------------------------------- #
-# 5. Pick the most-frequent features in the top 10
-# --------------------------------------------------------------------------- #
 counts = {name: 0 for name in feature_names}
 for row in top10.iter_rows(named=True):
     for idx in row["features"].split():
@@ -215,17 +167,11 @@ print("\nFeature frequency in top 10 subsets:")
 for name, c in sorted(counts.items(), key=lambda kv: -kv[1]):
     print(f"  {name:>11s}: {c}")
 
-# Select features that appear in at least half of the top-10 subsets,
-# capped at five (matches the technical-report convention).
 selected = [n for n, c in sorted(counts.items(), key=lambda kv: -kv[1]) if c >= 5][:5]
 if len(selected) < 3:
     selected = [n for n, _ in sorted(counts.items(), key=lambda kv: -kv[1])[:5]]
 print(f"\nSelected feature subset for downstream modeling: {selected}")
 
-
-# --------------------------------------------------------------------------- #
-# 6. Correlation heat map of the selected features + LogReturn + CloseLag1
-# --------------------------------------------------------------------------- #
 heatmap_cols = ["LogReturn", "CloseLag1"] + [c for c in selected if c != "CloseLag1"]
 X_study = pltr.select(heatmap_cols)
 corr = X_study.corr()
@@ -242,10 +188,6 @@ plt.tight_layout()
 plt.savefig(os.path.join(FIG_DIR, "pltr_correlation_heatmap.png"), dpi=150)
 plt.close()
 
-
-# --------------------------------------------------------------------------- #
-# 7. Build feature matrix from selected columns and define CV splits
-# --------------------------------------------------------------------------- #
 X_selected_df = pltr.select(selected)
 X_selected = scaler.fit_transform(np.array(X_selected_df))
 
@@ -256,10 +198,6 @@ for i, (tr, te) in enumerate(all_splits):
     print(f"  fold {i}: train [{tr.min()}..{tr.max()}] (n={len(tr)})  "
           f"test [{te.min()}..{te.max()}] (n={len(te)})")
 
-
-# --------------------------------------------------------------------------- #
-# 8. Baseline XGBoost with default hyperparameters (n_estimators=1000)
-# --------------------------------------------------------------------------- #
 baseline = XGBClassifier(
     objective="binary:logistic",
     n_estimators=1000,
@@ -278,13 +216,10 @@ mean_acc, std_acc = evaluate(baseline, X_selected, y, cv=tscv)
 print(f"\nBaseline XGBoost CV accuracy: {mean_acc:.3f} +/- {std_acc:.3f}")
 
 
-# --------------------------------------------------------------------------- #
-# 9. Randomized search for hyperparameters
-# --------------------------------------------------------------------------- #
 param_dist = {
     "max_depth": randint(3, 10),
     "min_child_weight": randint(1, 10),
-    "subsample": uniform(0.5, 0.5),  # samples in [0.5, 1.0]
+    "subsample": uniform(0.5, 0.5),  
     "learning_rate": uniform(0.01, 0.1),
     "n_estimators": randint(100, 1000),
 }
@@ -308,9 +243,6 @@ print(f"Best params: {random_search.best_params_}")
 print(f"Best CV accuracy: {random_search.best_score_:.3f}")
 
 
-# --------------------------------------------------------------------------- #
-# 10. Final model fit and evaluation
-# --------------------------------------------------------------------------- #
 best_params = random_search.best_params_
 final_model = XGBClassifier(
     objective="binary:logistic",
@@ -353,7 +285,6 @@ print(classification_report(
     target_names=["Negative Return", "Positive Return"],
 ))
 
-# Feature importance plot
 fig, ax = plt.subplots(figsize=(7, 4))
 importances = final_model.feature_importances_
 order = np.argsort(importances)[::-1]
