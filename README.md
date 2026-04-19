@@ -56,8 +56,6 @@ python3 getdata_pltr.py
 # 2. Run the full feature-engineering and modeling pipeline
 python3 pltr_pa1_analysis.py
 
-# 3. Rebuild the Word research report from the figures
-python3 build_report.py
 ```
 
 `pltr_pa1_analysis.py` runs end to end in a couple of minutes on a modern laptop. The all-possible-subsets stage evaluates 32,767 logistic regressions; this is the slow step.
